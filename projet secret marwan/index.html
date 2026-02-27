@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Musicboxd</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<nav>
+  <h1>Musicboxd</h1>
+  <div>
+    <a href="index.html">Accueil</a>
+    <a href="profile.html">Profil</a>
+    <a href="admin.html">Admin</a>
+  </div>
+</nav>
+
+<div class="container">
+  <h2>Singles / Albums notes</h2>
+  <p class="section-subtitle">Tous les singles et albums que tu as notes.</p>
+  <div class="album-grid" id="rated-grid"></div>
+
+  <h2 class="section-title">Catalogue API</h2>
+
+  <div class="search-row">
+    <input
+      type="text"
+      id="search-input"
+      placeholder="Filtrer dans les resultats deja charges..."
+    >
+    <button id="search-btn">Filtrer</button>
+  </div>
+
+  <p id="search-status" class="section-subtitle"></p>
+  <div class="album-grid" id="album-grid"></div>
+</div>
+
+<script src="js/spotify-api.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  const ratedGrid = document.getElementById("rated-grid");
+  const grid = document.getElementById("album-grid");
+  const input = document.getElementById("search-input");
+  const searchBtn = document.getElementById("search-btn");
+  const searchStatus = document.getElementById("search-status");
+
+  const API_QUERIES = ["rap", "hip hop", "pop", "rock", "electronic", "rnb", "jazz", "k-pop"];
+  const PAGE_SIZE = 50;
+  const MAX_PAGES = 2;
+  let allItems = [];
+
+  searchBtn.addEventListener("click", () => renderFromFilter(input.value.trim()));
+  input.addEventListener("keydown", event => {
+    if (event.key === "Enter") renderFromFilter(input.value.trim());
+  });
+
+  window.addEventListener("storage", () => {
+    renderRatedSection();
+    renderFromFilter(input.value.trim());
+  });
+
+  try {
+    await spotifyApi.bootstrapAuth();
+  } catch (error) {
+    grid.innerHTML = "<p>Connexion Spotify impossible.</p>";
+    return;
+  }
+
+  if (!spotifyApi.getClientId()) {
+    grid.innerHTML = "<p>Ajoute ton Spotify Client ID dans localStorage avec la cle <strong>spotify_client_id</strong>.</p>";
+    return;
+  }
+
+  if (!spotifyApi.isTokenValid()) {
+    grid.innerHTML = '<p>Connecte Spotify pour charger le catalogue.</p><button id="spotify-connect-btn">Connecter Spotify</button>';
+    const connectBtn = document.getElementById("spotify-connect-btn");
+    connectBtn.addEventListener("click", () => {
+      spotifyApi.startLogin();
+    });
+    return;
+  }
+
+  await renderRatedSection();
+  await loadAllFromApi();
+
+  async function loadAllFromApi() {
+    grid.innerHTML = "<p>Chargement des albums et singles...</p>";
+    searchStatus.textContent = "";
+
+    try {
+      const merged = [];
+      for (const query of API_QUERIES) {
+        for (let page = 0; page < MAX_PAGES; page += 1) {
+          const offset = page * PAGE_SIZE;
+          const results = await fetchItemsByQuery(query, PAGE_SIZE, offset);
+          if (!results.length) break;
+          merged.push(...results);
+          if (results.length < PAGE_SIZE) break;
+          await wait(200);
+        }
+      }
+
+      allItems = normalizeAndDeduplicate(merged);
+
+      if (!allItems.length) {
+        grid.innerHTML = "<p>Aucun contenu recupere depuis l'API.</p>";
+        searchStatus.textContent = "Aucun resultat disponible.";
+        return;
+      }
+
+      renderFromFilter("");
+    } catch (error) {
+      grid.innerHTML = "<p>Erreur de chargement API.</p>";
+      searchStatus.textContent = "Impossible de charger le catalogue.";
+    }
+  }
+
+  async function fetchItemsByQuery(query, limit, offset) {
+    const data = await spotifyApi.search(query, ["album", "track"], limit, offset);
+    const albums = (data.albums && data.albums.items) || [];
+    const tracks = (data.tracks && data.tracks.items) || [];
+
+    return [
+      ...albums.map(album => ({ sourceType: "album", data: album })),
+      ...tracks.map(track => ({ sourceType: "track", data: track }))
+    ];
+  }
+
+  function normalizeAndDeduplicate(rawItems) {
+    const unique = new Map();
+
+    rawItems.forEach(entry => {
+      const item = entry.data;
+      if (!item || !item.id) return;
+
+      if (entry.sourceType === "album") {
+        const normalizedAlbum = {
+          id: item.id,
+          type: "album",
+          title: item.name,
+          artist: formatArtists(item.artists),
+          year: (item.release_date || "").slice(0, 4),
+          image: buildImageUrl(item.images)
+        };
+
+        const albumKey = `${normalizedAlbum.type}:${normalizedAlbum.id}`;
+        if (!unique.has(albumKey)) unique.set(albumKey, normalizedAlbum);
+        return;
+      }
+
+      const normalizedTrack = {
+        id: item.id,
+        type: "single",
+        title: item.name,
+        artist: formatArtists(item.artists),
+        year: ((item.album && item.album.release_date) || "").slice(0, 4),
+        image: buildImageUrl(item.album && item.album.images)
+      };
+
+      const trackKey = `${normalizedTrack.type}:${normalizedTrack.id}`;
+      if (!unique.has(trackKey)) unique.set(trackKey, normalizedTrack);
+    });
+
+    return Array.from(unique.values()).sort((a, b) => {
+      const aRating = getStoredRating(a.type, a.id);
+      const bRating = getStoredRating(b.type, b.id);
+
+      if (bRating !== aRating) return bRating - aRating;
+      return a.title.localeCompare(b.title, "fr", { sensitivity: "base" });
+    });
+  }
+
+  function renderFromFilter(rawFilter) {
+    const filter = rawFilter.trim().toLowerCase();
+    const visible = filter
+      ? allItems.filter(item =>
+          item.title.toLowerCase().includes(filter) ||
+          item.artist.toLowerCase().includes(filter)
+        )
+      : allItems;
+
+    grid.innerHTML = "";
+
+    if (!visible.length) {
+      grid.innerHTML = "<p>Aucun resultat pour ce filtre.</p>";
+      searchStatus.textContent = "0 resultat affiche.";
+      return;
+    }
+
+    visible.forEach(item => {
+      const card = createAlbumCard(item, false);
+      grid.appendChild(card);
+    });
+
+    searchStatus.textContent = `${visible.length} element(s) affiche(s) sur ${allItems.length}.`;
+  }
+
+  async function renderRatedSection() {
+    ratedGrid.innerHTML = "<p>Chargement des notations...</p>";
+
+    const ratedEntries = getRatedEntries();
+    if (!ratedEntries.length) {
+      ratedGrid.innerHTML = "<p>Aucun album ou single note pour le moment.</p>";
+      return;
+    }
+
+    try {
+      const ratedItems = await Promise.all(
+        ratedEntries.map(async entry => {
+          const item = entry.type === "single"
+            ? await spotifyApi.getTrack(entry.id)
+            : await spotifyApi.getAlbum(entry.id);
+
+          if (!item) return null;
+
+          if (entry.type === "single") {
+            return {
+              id: item.id,
+              type: "single",
+              title: item.name,
+              artist: formatArtists(item.artists),
+              year: ((item.album && item.album.release_date) || "").slice(0, 4),
+              image: buildImageUrl(item.album && item.album.images),
+              rating: entry.rating
+            };
+          }
+
+          return {
+            id: item.id,
+            type: "album",
+            title: item.name,
+            artist: formatArtists(item.artists),
+            year: (item.release_date || "").slice(0, 4),
+            image: buildImageUrl(item.images),
+            rating: entry.rating
+          };
+        })
+      );
+
+      const validItems = ratedItems.filter(Boolean);
+      ratedGrid.innerHTML = "";
+
+      if (!validItems.length) {
+        ratedGrid.innerHTML = "<p>Aucun album ou single note pour le moment.</p>";
+        return;
+      }
+
+      validItems.forEach(item => {
+        const card = createAlbumCard(item, true);
+        ratedGrid.appendChild(card);
+      });
+    } catch (error) {
+      ratedGrid.innerHTML = "<p>Impossible de charger les albums notes.</p>";
+    }
+  }
+
+  function createAlbumCard(item, showRatedBadge) {
+    const card = document.createElement("a");
+    card.className = "album-card";
+    card.href = `album.html?id=${encodeURIComponent(item.id)}&type=${item.type}`;
+    card.dataset.album = item.id;
+    card.dataset.type = item.type;
+
+    const savedRating = getStoredRating(item.type, item.id);
+    const stars = "?".repeat(savedRating) + "?".repeat(5 - savedRating);
+    const color = savedRating > 0 ? "#00e054" : "#9aa4ad";
+
+    card.innerHTML = `
+      <img src="${item.image}" alt="${item.title}">
+      <h3>${item.title}</h3>
+      <p>${item.artist}${item.year ? " • " + item.year : ""}</p>
+      <p class="media-type-badge">${item.type === "single" ? "Single" : "Album"}</p>
+      <div class="rating-display" style="color:${color}">${savedRating > 0 ? "Ta note : " + stars : "Non note"}</div>
+      ${showRatedBadge ? '<p class="rated-badge">Note</p>' : ""}
+    `;
+
+    return card;
+  }
+
+  function getRatedEntries() {
+    const ratedEntries = [];
+
+    Object.keys(localStorage).forEach(key => {
+      const value = Number(localStorage.getItem(key));
+      const namespacedMatch = key.match(/^rating:(album|single):([a-z0-9-]+)$/i);
+
+      if (namespacedMatch && value >= 1 && value <= 5) {
+        ratedEntries.push({
+          type: namespacedMatch[1],
+          id: namespacedMatch[2],
+          rating: value
+        });
+        return;
+      }
+
+      const legacyId = Number(key);
+      if (!Number.isNaN(legacyId) && value >= 1 && value <= 5) {
+        ratedEntries.push({ type: "album", id: key, rating: value });
+      }
+    });
+
+    ratedEntries.sort((a, b) => b.rating - a.rating);
+    return ratedEntries;
+  }
+
+  function getStoredRating(type, id) {
+    const namespaced = Number(localStorage.getItem(`rating:${type}:${id}`) || 0);
+    if (namespaced >= 1 && namespaced <= 5) return namespaced;
+
+    if (type === "album") {
+      const legacy = Number(localStorage.getItem(String(id)) || 0);
+      if (legacy >= 1 && legacy <= 5) return legacy;
+    }
+
+    return 0;
+  }
+
+  function formatArtists(artists) {
+    if (!Array.isArray(artists) || !artists.length) return "Artiste inconnu";
+    return artists.map(artist => artist.name).join(", ");
+  }
+
+  function buildImageUrl(images) {
+    if (Array.isArray(images) && images.length) {
+      return images[0].url;
+    }
+    return "images/album1.jpg";
+  }
+
+  function wait(ms) {
+    return new Promise(resolve => {
+      setTimeout(resolve, ms);
+    });
+  }
+});
+</script>
+</body>
+</html>

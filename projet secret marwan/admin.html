@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Admin – Musicboxd</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<nav>
+  <h1>Musicboxd – Admin</h1>
+  <div>
+    <a href="index.html">Accueil</a>
+    <a href="profile.html">Profil</a>
+  </div>
+</nav>
+
+<div class="container">
+  <h2>Ajouter des albums</h2>
+
+  <input
+    type="text"
+    id="search-input"
+    placeholder="Ex: Daft Punk, Kanye West, Travis Scott..."
+    style="width:100%;padding:10px;margin-bottom:10px;"
+  >
+
+  <button id="search-btn">Rechercher</button>
+
+  <h3>Résultats</h3>
+  <div class="album-grid" id="results"></div>
+</div>
+
+<script src="js/admin.js"></script>
+</body>
+</html>
