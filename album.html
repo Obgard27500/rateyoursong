@@ -1,0 +1,160 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Album</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<nav>
+  <h1>Musicboxd</h1>
+  <div>
+    <a href="index.html">Accueil</a>
+    <a href="profile.html">Profil</a>
+  </div>
+</nav>
+
+<div class="container" id="album-container"></div>
+
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  const params = new URLSearchParams(window.location.search);
+  const id = params.get("id");
+  const rawType = (params.get("type") || "album").toLowerCase();
+  const initialType = rawType === "single" ? "single" : "album";
+  const MUSICBRAINZ_BASE = "https://musicbrainz.org/ws/2";
+  const container = document.getElementById("album-container");
+
+  if (!id) {
+    container.innerHTML = "<p>Album introuvable</p>";
+    return;
+  }
+
+  container.innerHTML = "<p>Chargement de l'album...</p>";
+
+  try {
+    const release = await fetchRelease(id);
+    if (!release) {
+      container.innerHTML = "<p>Album introuvable</p>";
+      return;
+    }
+
+    const releaseGroup = release["release-group"] || {};
+    const resolvedType = resolveReleaseType(releaseGroup, initialType);
+    const tracks = (release.media || []).flatMap(media => media.tracks || []);
+    const mediaId = release.id;
+    const title = release.title;
+
+    container.innerHTML = `
+      <div class="details">
+        <img src="${buildCoverUrl(release.id, releaseGroup.id, release["cover-art-archive"])}" alt="${title}">
+        <div class="details-info">
+          <h2>${title}</h2>
+          <p><strong>Type :</strong> ${resolvedType === "single" ? "Single" : "Album"}</p>
+          <p><strong>Artiste :</strong> ${formatArtistCredit(release["artist-credit"])}</p>
+          <p><strong>Année :</strong> ${(release.date || "").slice(0, 4)}</p>
+
+          <div class="rating" data-media-id="${mediaId}" data-media-type="${resolvedType}">
+            <span data-star="1">★</span>
+            <span data-star="2">★</span>
+            <span data-star="3">★</span>
+            <span data-star="4">★</span>
+            <span data-star="5">★</span>
+          </div>
+          <p id="rating-text">Non noté</p>
+        </div>
+      </div>
+
+      ${resolvedType === "album" ? '<h3>Titres</h3><ol id="track-list"></ol>' : ""}
+    `;
+
+    if (resolvedType === "album") {
+      const trackList = document.getElementById("track-list");
+      tracks.forEach(track => {
+        const li = document.createElement("li");
+        li.textContent = track.title || "Titre inconnu";
+        trackList.appendChild(li);
+      });
+    }
+
+    initRating(mediaId, resolvedType);
+  } catch (error) {
+    container.innerHTML = "<p>Erreur de chargement API.</p>";
+  }
+
+  async function fetchRelease(mediaId) {
+    const url = `${MUSICBRAINZ_BASE}/release/${encodeURIComponent(mediaId)}?inc=artists+recordings+release-groups&fmt=json`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return res.json();
+  }
+
+  function resolveReleaseType(releaseGroup, fallbackType) {
+    const primary = String(releaseGroup["primary-type"] || "").toLowerCase();
+    const secondary = (releaseGroup["secondary-types"] || []).map(type => String(type).toLowerCase());
+    if (primary === "single" || secondary.includes("single")) return "single";
+    if (primary === "album" || primary === "ep") return "album";
+    return fallbackType;
+  }
+
+  function formatArtistCredit(artistCredit) {
+    if (!Array.isArray(artistCredit) || !artistCredit.length) return "Artiste inconnu";
+    return artistCredit
+      .map(entry => entry.name || (entry.artist && entry.artist.name) || "")
+      .join("")
+      .trim() || "Artiste inconnu";
+  }
+
+  function buildCoverUrl(releaseId, releaseGroupId, coverArchive) {
+    if (coverArchive && coverArchive.front) {
+      return `https://coverartarchive.org/release/${releaseId}/front-250`;
+    }
+    if (releaseGroupId) {
+      return `https://coverartarchive.org/release-group/${releaseGroupId}/front-250`;
+    }
+    return "images/album1.jpg";
+  }
+
+  function initRating(mediaId, mediaType) {
+    const ratingContainer = document.querySelector(".rating");
+    const stars = ratingContainer.querySelectorAll("span");
+    const ratingText = document.getElementById("rating-text");
+    const savedRating = getStoredRating(mediaType, mediaId);
+
+    function updateStars(value) {
+      stars.forEach(star => {
+        star.classList.toggle("active", Number(star.dataset.star) <= Number(value));
+      });
+      ratingText.textContent = value > 0 ? `Ta note : ${value}/5` : "Non noté";
+    }
+
+    updateStars(savedRating);
+
+    stars.forEach(star => {
+      star.addEventListener("click", () => {
+        const value = Number(star.dataset.star);
+        localStorage.setItem(`rating:${mediaType}:${mediaId}`, String(value));
+        if (mediaType === "album") {
+          localStorage.setItem(String(mediaId), String(value));
+        }
+        updateStars(value);
+      });
+    });
+  }
+
+  function getStoredRating(mediaType, mediaId) {
+    const namespaced = Number(localStorage.getItem(`rating:${mediaType}:${mediaId}`) || 0);
+    if (namespaced >= 1 && namespaced <= 5) return namespaced;
+
+    if (mediaType === "album") {
+      const legacy = Number(localStorage.getItem(String(mediaId)) || 0);
+      if (legacy >= 1 && legacy <= 5) return legacy;
+    }
+
+    return 0;
+  }
+});
+</script>
+</body>
+</html>

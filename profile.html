@@ -1,0 +1,261 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Profil</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<nav>
+  <h1>Musicboxd</h1>
+  <div>
+    <a href="index.html">Accueil</a>
+    <a href="profile.html">Profil</a>
+  </div>
+</nav>
+
+<div class="container">
+  <section class="profile-banner" id="profile-banner">
+    <img id="profile-avatar" class="profile-avatar" alt="Photo de profil">
+    <div class="profile-meta">
+      <h2 id="profile-name">@username</h2>
+      <p>Membre depuis 2026</p>
+    </div>
+  </section>
+
+  <section class="profile-editor">
+    <h3>Personnaliser le profil</h3>
+
+    <label for="profile-username">Pseudo</label>
+    <input id="profile-username" type="text" placeholder="Ton pseudo">
+
+    <label for="avatar-upload">Photo de profil</label>
+    <input id="avatar-upload" type="file" accept="image/*">
+
+    <label for="banner-upload">Bannière de profil</label>
+    <input id="banner-upload" type="file" accept="image/*">
+
+    <button id="save-profile-btn">Enregistrer le profil</button>
+  </section>
+
+  <h3>Albums / Singles notés</h3>
+  <div class="album-grid" id="rated-grid"></div>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const MUSICBRAINZ_BASE = "https://musicbrainz.org/ws/2";
+  const banner = document.getElementById("profile-banner");
+  const avatar = document.getElementById("profile-avatar");
+  const nameEl = document.getElementById("profile-name");
+
+  const usernameInput = document.getElementById("profile-username");
+  const avatarUpload = document.getElementById("avatar-upload");
+  const bannerUpload = document.getElementById("banner-upload");
+  const saveBtn = document.getElementById("save-profile-btn");
+
+  const ratedGrid = document.getElementById("rated-grid");
+
+  const DEFAULT_PROFILE = {
+    username: "@username",
+    avatarData: "",
+    bannerData: ""
+  };
+
+  let draftAvatar = "";
+  let draftBanner = "";
+
+  loadProfile();
+  renderRatedSection();
+
+  avatarUpload.addEventListener("change", async () => {
+    draftAvatar = await readImageAsDataUrl(avatarUpload.files[0]);
+  });
+
+  bannerUpload.addEventListener("change", async () => {
+    draftBanner = await readImageAsDataUrl(bannerUpload.files[0]);
+  });
+
+  saveBtn.addEventListener("click", () => {
+    const current = getProfileData();
+    const nextProfile = {
+      username: usernameInput.value.trim() || current.username || DEFAULT_PROFILE.username,
+      avatarData: draftAvatar || current.avatarData || "",
+      bannerData: draftBanner || current.bannerData || ""
+    };
+
+    localStorage.setItem("profile_settings", JSON.stringify(nextProfile));
+    draftAvatar = "";
+    draftBanner = "";
+    avatarUpload.value = "";
+    bannerUpload.value = "";
+
+    applyProfile(nextProfile);
+  });
+
+  function loadProfile() {
+    const profile = getProfileData();
+    applyProfile(profile);
+    usernameInput.value = profile.username || DEFAULT_PROFILE.username;
+  }
+
+  function getProfileData() {
+    const raw = localStorage.getItem("profile_settings");
+    if (!raw) return DEFAULT_PROFILE;
+
+    try {
+      return { ...DEFAULT_PROFILE, ...JSON.parse(raw) };
+    } catch (error) {
+      return DEFAULT_PROFILE;
+    }
+  }
+
+  function applyProfile(profile) {
+    nameEl.textContent = profile.username || DEFAULT_PROFILE.username;
+
+    if (profile.avatarData) {
+      avatar.src = profile.avatarData;
+    } else {
+      avatar.removeAttribute("src");
+    }
+
+    if (profile.bannerData) {
+      banner.style.backgroundImage = `url(${profile.bannerData})`;
+    } else {
+      banner.style.backgroundImage = "";
+    }
+  }
+
+  async function renderRatedSection() {
+    ratedGrid.innerHTML = "<p>Chargement des notations...</p>";
+
+    const ratedEntries = getRatedEntries();
+    if (!ratedEntries.length) {
+      ratedGrid.innerHTML = "<p>Aucun album ou single noté pour le moment.</p>";
+      return;
+    }
+
+    try {
+      const albums = await Promise.all(
+        ratedEntries.map(async entry => {
+          const url = `${MUSICBRAINZ_BASE}/release/${encodeURIComponent(entry.id)}?inc=artists+release-groups&fmt=json`;
+          const res = await fetch(url);
+          if (!res.ok) return null;
+          const release = await res.json();
+          const releaseGroup = release["release-group"] || {};
+          const type = resolveReleaseType(releaseGroup, entry.type);
+
+          return {
+            id: release.id,
+            type,
+            title: release.title,
+            artist: formatArtistCredit(release["artist-credit"]),
+            image: buildCoverUrl(release.id, releaseGroup.id, release["cover-art-archive"]),
+            rating: entry.rating
+          };
+        })
+      );
+
+      const validAlbums = albums.filter(Boolean);
+      ratedGrid.innerHTML = "";
+
+      if (!validAlbums.length) {
+        ratedGrid.innerHTML = "<p>Aucun album ou single noté pour le moment.</p>";
+        return;
+      }
+
+      validAlbums.forEach(album => {
+        const card = document.createElement("a");
+        card.className = "album-card";
+        card.href = `album.html?id=${encodeURIComponent(album.id)}&type=${album.type}`;
+        card.dataset.album = album.id;
+        card.dataset.type = album.type;
+
+        const stars = "★".repeat(album.rating) + "☆".repeat(5 - album.rating);
+
+        card.innerHTML = `
+          <img src="${album.image}" alt="${album.title}">
+          <h3>${album.title}</h3>
+          <p>${album.artist}</p>
+          <p class="media-type-badge">${album.type === "single" ? "Single" : "Album"}</p>
+          <div class="rating-display" style="color:#00e054">Ta note : ${stars}</div>
+          <p class="rated-badge">Noté</p>
+        `;
+
+        ratedGrid.appendChild(card);
+      });
+    } catch (error) {
+      ratedGrid.innerHTML = "<p>Impossible de charger les albums notés.</p>";
+    }
+  }
+
+  function getRatedEntries() {
+    const ratedEntries = [];
+
+    Object.keys(localStorage).forEach(key => {
+      const value = Number(localStorage.getItem(key));
+      const namespacedMatch = key.match(/^rating:(album|single):([a-z0-9-]+)$/i);
+
+      if (namespacedMatch && value >= 1 && value <= 5) {
+        ratedEntries.push({
+          type: namespacedMatch[1],
+          id: namespacedMatch[2],
+          rating: value
+        });
+        return;
+      }
+
+      const legacyId = Number(key);
+      if (!Number.isNaN(legacyId) && value >= 1 && value <= 5) {
+        ratedEntries.push({ type: "album", id: legacyId, rating: value });
+      }
+    });
+
+    ratedEntries.sort((a, b) => b.rating - a.rating);
+    return ratedEntries;
+  }
+
+  function resolveReleaseType(releaseGroup, fallbackType) {
+    const primary = String(releaseGroup["primary-type"] || "").toLowerCase();
+    const secondary = (releaseGroup["secondary-types"] || []).map(type => String(type).toLowerCase());
+    if (primary === "single" || secondary.includes("single")) return "single";
+    if (primary === "album" || primary === "ep") return "album";
+    return fallbackType || "album";
+  }
+
+  function formatArtistCredit(artistCredit) {
+    if (!Array.isArray(artistCredit) || !artistCredit.length) return "Artiste inconnu";
+    return artistCredit
+      .map(entry => entry.name || (entry.artist && entry.artist.name) || "")
+      .join("")
+      .trim() || "Artiste inconnu";
+  }
+
+  function buildCoverUrl(releaseId, releaseGroupId, coverArchive) {
+    if (coverArchive && coverArchive.front) {
+      return `https://coverartarchive.org/release/${releaseId}/front-250`;
+    }
+    if (releaseGroupId) {
+      return `https://coverartarchive.org/release-group/${releaseGroupId}/front-250`;
+    }
+    return "images/album1.jpg";
+  }
+
+  function readImageAsDataUrl(file) {
+    return new Promise(resolve => {
+      if (!file) {
+        resolve("");
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => resolve("");
+      reader.readAsDataURL(file);
+    });
+  }
+});
+</script>
+</body>
+</html>
